@@ -1,0 +1,24 @@
+[
+  {
+    "Name": "Arduino IDE",
+    "Version": "2.3.9.0",
+    "Url": "https://downloads.arduino.cc/arduino-ide/arduino-ide_2.3.9_Windows_64bit.msi",
+    "FileName": "arduino-ide_2.3.9_Windows_64bit.msi",
+    "Sha256": "FC9E5FE90E7A87B2FFADCA869894523D2DC28B77A43DA271B366E4117EDEFCA2",
+    "ProductCode": "{87DACE9A-7153-4FD4-91E9-3E6098680AA9}",
+    "UpgradeCode": "{315F6168-1C48-5F6A-953D-BD5ADC41FE08}",
+    "InstallerType": "msi",
+    "MsiProperties": "ALLUSERS=1"
+  },
+  {
+    "Name": "LEGO Education SPIKE",
+    "Version": "3.6.1",
+    "Url": "https://assets.education.lego.com/_/downloads/SPIKE_APP_3_Win10__3.6.1_Global.msi",
+    "FileName": "SPIKE_APP_3_Win10__3.6.1_Global.msi",
+    "Sha256": "F2B4BD158D3E948E65E9CE00366E6AFA6D69F4FE546E1F8B4BAD2E6FDF18D31A",
+    "ProductCode": "{51EFDCF7-4C62-4E81-8BD2-12BB7E1BC7C2}",
+    "UpgradeCode": "{360F92B6-924B-4874-AAE5-033F61922ABB}",
+    "InstallerType": "msi",
+    "MsiProperties": "ALLUSERS=1"
+  }
+]
