@@ -29,6 +29,24 @@ function ConvertTo-Version {
     }
 }
 
+function Get-ObjectPropertyValue {
+    param(
+        [object]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($property) {
+        return $property.Value
+    }
+
+    return $null
+}
+
 function Get-InstalledApplication {
     param([Parameter(Mandatory = $true)][pscustomobject]$App)
 
@@ -45,9 +63,12 @@ function Get-InstalledApplication {
         $productCodePath = Join-Path $root $App.ProductCode
         if (Test-Path -LiteralPath $productCodePath) {
             $item = Get-ItemProperty -LiteralPath $productCodePath
+            $displayName = Get-ObjectPropertyValue -InputObject $item -Name "DisplayName"
+            $displayVersion = Get-ObjectPropertyValue -InputObject $item -Name "DisplayVersion"
+
             return [pscustomobject]@{
-                DisplayName = $item.DisplayName
-                DisplayVersion = $item.DisplayVersion
+                DisplayName = $displayName
+                DisplayVersion = $displayVersion
                 ProductCode = $App.ProductCode
                 RegistryPath = $productCodePath
             }
@@ -59,27 +80,24 @@ function Get-InstalledApplication {
             continue
         }
 
-        $matches = Get-ChildItem -LiteralPath $root |
-            ForEach-Object {
-                try {
-                    Get-ItemProperty -LiteralPath $_.PSPath
-                }
-                catch {
-                    $null
-                }
-            } |
-            Where-Object {
-                $_ -and
-                $_.DisplayName -eq $App.Name -and
-                $_.DisplayVersion
+        foreach ($subkey in Get-ChildItem -LiteralPath $root) {
+            try {
+                $item = Get-ItemProperty -LiteralPath $subkey.PSPath
+            }
+            catch {
+                continue
             }
 
-        foreach ($match in $matches) {
-            return [pscustomobject]@{
-                DisplayName = $match.DisplayName
-                DisplayVersion = $match.DisplayVersion
-                ProductCode = $match.PSChildName
-                RegistryPath = $match.PSPath
+            $displayName = Get-ObjectPropertyValue -InputObject $item -Name "DisplayName"
+            $displayVersion = Get-ObjectPropertyValue -InputObject $item -Name "DisplayVersion"
+
+            if ($displayName -eq $App.Name -and -not [string]::IsNullOrWhiteSpace($displayVersion)) {
+                return [pscustomobject]@{
+                    DisplayName = $displayName
+                    DisplayVersion = $displayVersion
+                    ProductCode = $subkey.PSChildName
+                    RegistryPath = $subkey.PSPath
+                }
             }
         }
     }
