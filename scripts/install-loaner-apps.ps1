@@ -71,6 +71,28 @@ function Test-ManifestFlag {
     return ([string]$value).Trim() -in @("1", "true", "yes")
 }
 
+function Get-ManifestStringList {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$App,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $value = Get-ObjectPropertyValue -InputObject $App -Name $Name
+    if ($null -eq $value) {
+        return @()
+    }
+
+    if ($value -is [array]) {
+        return @($value | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$value)) {
+        return @()
+    }
+
+    return @([string]$value)
+}
+
 function Assert-AppDefinition {
     param(
         [Parameter(Mandatory = $true)][pscustomobject]$App,
@@ -137,6 +159,44 @@ function Get-UninstallRegistryRoot {
     )
 }
 
+function Test-ApplicationEntryMatch {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$App,
+        [Parameter(Mandatory = $true)][string]$ProductCode,
+        [string]$DisplayName,
+        [string]$UninstallString,
+        [string]$QuietUninstallString,
+        [string]$InstallLocation
+    )
+
+    if ($ProductCode -eq $App.ProductCode) {
+        return $true
+    }
+
+    if ($DisplayName -eq $App.Name) {
+        return $true
+    }
+
+    foreach ($pattern in Get-ManifestStringList -App $App -Name "RemoveExistingNamePatterns") {
+        if (-not [string]::IsNullOrWhiteSpace($DisplayName) -and $DisplayName -match $pattern) {
+            return $true
+        }
+    }
+
+    $pathValues = @($UninstallString, $QuietUninstallString, $InstallLocation) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    foreach ($pattern in Get-ManifestStringList -App $App -Name "RemoveExistingPathPatterns") {
+        foreach ($pathValue in $pathValues) {
+            if ($pathValue -match $pattern) {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
+
 function Get-InstalledApplicationEntry {
     param([Parameter(Mandatory = $true)][pscustomobject]$App)
 
@@ -161,10 +221,11 @@ function Get-InstalledApplicationEntry {
 
             $displayName = Get-ObjectPropertyValue -InputObject $item -Name "DisplayName"
             $displayVersion = Get-ObjectPropertyValue -InputObject $item -Name "DisplayVersion"
-            $isTargetProductCode = $subkey.PSChildName -eq $App.ProductCode
-            $isMatchingDisplayName = $displayName -eq $App.Name
+            $uninstallString = Get-ObjectPropertyValue -InputObject $item -Name "UninstallString"
+            $quietUninstallString = Get-ObjectPropertyValue -InputObject $item -Name "QuietUninstallString"
+            $installLocation = Get-ObjectPropertyValue -InputObject $item -Name "InstallLocation"
 
-            if (-not $isTargetProductCode -and -not $isMatchingDisplayName) {
+            if (-not (Test-ApplicationEntryMatch -App $App -ProductCode $subkey.PSChildName -DisplayName $displayName -UninstallString $uninstallString -QuietUninstallString $quietUninstallString -InstallLocation $installLocation)) {
                 continue
             }
 
@@ -177,9 +238,9 @@ function Get-InstalledApplicationEntry {
                 RegistryPath = $subkey.PSPath
                 Scope = $root.Scope
                 WindowsInstaller = Get-ObjectPropertyValue -InputObject $item -Name "WindowsInstaller"
-                UninstallString = Get-ObjectPropertyValue -InputObject $item -Name "UninstallString"
-                QuietUninstallString = Get-ObjectPropertyValue -InputObject $item -Name "QuietUninstallString"
-                InstallLocation = Get-ObjectPropertyValue -InputObject $item -Name "InstallLocation"
+                UninstallString = $uninstallString
+                QuietUninstallString = $quietUninstallString
+                InstallLocation = $installLocation
             }
         }
     }
@@ -371,6 +432,76 @@ function Uninstall-InstalledApplication {
     throw "$($Entry.DisplayName)$versionText uninstall failed with exit code $($process.ExitCode)."
 }
 
+function Resolve-ExpandedPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $expandedPath = [Environment]::ExpandEnvironmentVariables($Path)
+    if ([string]::IsNullOrWhiteSpace($expandedPath)) {
+        return $null
+    }
+
+    return [System.IO.Path]::GetFullPath($expandedPath)
+}
+
+function Test-SafeCleanupPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = Resolve-ExpandedPath -Path $Path
+    if ([string]::IsNullOrWhiteSpace($fullPath)) {
+        return $false
+    }
+
+    $normalizedPath = $fullPath.TrimEnd("\")
+    if ($normalizedPath -notmatch "Arduino") {
+        throw "Refusing to remove cleanup path without Arduino in the path: $fullPath"
+    }
+
+    $blockedPaths = @(
+        "$env:SystemDrive\",
+        $env:ProgramFiles,
+        [Environment]::GetEnvironmentVariable("ProgramFiles(x86)"),
+        $env:LOCALAPPDATA,
+        $env:APPDATA,
+        $env:ProgramData,
+        $env:USERPROFILE,
+        [Environment]::GetEnvironmentVariable("Public")
+    ) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { [System.IO.Path]::GetFullPath($_).TrimEnd("\") }
+
+    if ($blockedPaths -contains $normalizedPath) {
+        throw "Refusing to remove broad cleanup path: $fullPath"
+    }
+
+    return $true
+}
+
+function Invoke-StaleApplicationPathCleanup {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = Resolve-ExpandedPath -Path $Path
+    if ([string]::IsNullOrWhiteSpace($fullPath)) {
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $fullPath)) {
+        return
+    }
+
+    if (-not (Test-SafeCleanupPath -Path $fullPath)) {
+        return
+    }
+
+    Write-Host "Removing stale path: $fullPath"
+    $item = Get-Item -LiteralPath $fullPath -Force
+    if ($item.PSIsContainer) {
+        Remove-Item -LiteralPath $fullPath -Recurse -Force
+    }
+    else {
+        Remove-Item -LiteralPath $fullPath -Force
+    }
+}
+
 function Invoke-ExistingApplicationCleanup {
     param(
         [Parameter(Mandatory = $true)][pscustomobject]$App,
@@ -378,21 +509,14 @@ function Invoke-ExistingApplicationCleanup {
         [Parameter(Mandatory = $true)][string]$Timestamp
     )
 
-    $targetVersion = ConvertTo-Version -Value $App.Version
     $installedApplications = @(Get-InstalledApplicationEntry -App $App)
     $rebootRequiredByUninstall = $false
 
+    if ($installedApplications.Count -eq 0) {
+        Write-Host "No existing $($App.Name) registry entries found for cleanup."
+    }
+
     foreach ($entry in $installedApplications) {
-        if ($entry.ProductCode -eq $App.ProductCode) {
-            continue
-        }
-
-        $installedVersion = ConvertTo-Version -Value $entry.DisplayVersion
-        if ($installedVersion -and $targetVersion -and $installedVersion -gt $targetVersion) {
-            Write-Host "$($entry.DisplayName) $($entry.DisplayVersion) is newer than target $($App.Version). Leaving it installed."
-            continue
-        }
-
         $safeName = ($entry.DisplayName -replace '[^A-Za-z0-9.-]+', '-').Trim("-")
         if ([string]::IsNullOrWhiteSpace($safeName)) {
             $safeName = "existing-app"
@@ -409,6 +533,14 @@ function Invoke-ExistingApplicationCleanup {
         if ($exitCode -eq 3010) {
             $rebootRequiredByUninstall = $true
         }
+    }
+
+    foreach ($cleanupPath in Get-ManifestStringList -App $App -Name "CleanupPaths") {
+        Invoke-StaleApplicationPathCleanup -Path $cleanupPath
+    }
+
+    foreach ($cleanupShortcut in Get-ManifestStringList -App $App -Name "CleanupShortcuts") {
+        Invoke-StaleApplicationPathCleanup -Path $cleanupShortcut
     }
 
     if ($rebootRequiredByUninstall) {

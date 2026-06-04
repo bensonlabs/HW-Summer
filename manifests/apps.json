@@ -9,7 +9,32 @@
     "UpgradeCode": "{315F6168-1C48-5F6A-953D-BD5ADC41FE08}",
     "InstallerType": "msi",
     "MsiProperties": "ALLUSERS=1",
-    "RemoveExistingBeforeInstall": true
+    "RemoveExistingBeforeInstall": true,
+    "RemoveExistingNamePatterns": [
+      "Arduino"
+    ],
+    "RemoveExistingPathPatterns": [
+      "\\\\Arduino",
+      "\\\\arduino-ide"
+    ],
+    "CleanupPaths": [
+      "%LOCALAPPDATA%\\Programs\\Arduino IDE",
+      "%LOCALAPPDATA%\\Programs\\arduino-ide",
+      "%ProgramFiles%\\Arduino IDE",
+      "%ProgramFiles%\\Arduino",
+      "%ProgramFiles%\\arduino-ide",
+      "%ProgramFiles(x86)%\\Arduino IDE",
+      "%ProgramFiles(x86)%\\Arduino",
+      "%ProgramFiles(x86)%\\arduino-ide"
+    ],
+    "CleanupShortcuts": [
+      "%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\Arduino IDE.lnk",
+      "%ProgramData%\\Microsoft\\Windows\\Start Menu\\Programs\\Arduino IDE\\Arduino IDE.lnk",
+      "%Public%\\Desktop\\Arduino IDE.lnk",
+      "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Arduino IDE.lnk",
+      "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Arduino IDE\\Arduino IDE.lnk",
+      "%USERPROFILE%\\Desktop\\Arduino IDE.lnk"
+    ]
   },
   {
     "Name": "LEGO Education SPIKE",

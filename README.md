@@ -46,7 +46,7 @@ The installer uses official MSI downloads only:
 - LEGO Education SPIKE 3.6.1
 
 The script verifies SHA256 hashes before installation and skips apps that are already installed at the target version or newer.
-For Arduino IDE, the script also removes older matching per-user or machine-wide installs before checking whether the target MSI is installed.
+For Arduino IDE, the script removes matching Arduino registry entries, known Arduino app folders, and stale Arduino shortcuts before installing the target MSI.
 
 ## Notes
 
