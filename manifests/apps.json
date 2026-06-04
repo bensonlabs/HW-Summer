@@ -8,7 +8,8 @@
     "ProductCode": "{87DACE9A-7153-4FD4-91E9-3E6098680AA9}",
     "UpgradeCode": "{315F6168-1C48-5F6A-953D-BD5ADC41FE08}",
     "InstallerType": "msi",
-    "MsiProperties": "ALLUSERS=1"
+    "MsiProperties": "ALLUSERS=1",
+    "RemoveExistingBeforeInstall": true
   },
   {
     "Name": "LEGO Education SPIKE",

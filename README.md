@@ -32,7 +32,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod ht
 
 ## Final Rollout Command
 
-After testing, create the `v2026-summer` tag and use:
+Use the `v2026-summer` tag for the final cart rollout:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-RestMethod https://raw.githubusercontent.com/bensonlabs/HW-Summer/v2026-summer/scripts/bootstrap.ps1 -OutFile $env:TEMP\hw-summer-bootstrap.ps1; & $env:TEMP\hw-summer-bootstrap.ps1 -RepoRef v2026-summer"
@@ -46,6 +46,7 @@ The installer uses official MSI downloads only:
 - LEGO Education SPIKE 3.6.1
 
 The script verifies SHA256 hashes before installation and skips apps that are already installed at the target version or newer.
+For Arduino IDE, the script also removes older matching per-user or machine-wide installs before checking whether the target MSI is installed.
 
 ## Notes
 

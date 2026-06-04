@@ -47,40 +47,111 @@ function Get-ObjectPropertyValue {
     return $null
 }
 
-function Get-InstalledApplication {
-    param([Parameter(Mandatory = $true)][pscustomobject]$App)
+function Test-GuidString {
+    param([string]$Value)
 
-    $registryRoots = @(
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+    return $Value -match "^\{[0-9A-Fa-f-]{36}\}$"
+}
+
+function Test-ManifestFlag {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$App,
+        [Parameter(Mandatory = $true)][string]$Name
     )
 
-    foreach ($root in $registryRoots) {
-        if (-not (Test-Path -LiteralPath $root)) {
-            continue
+    $value = Get-ObjectPropertyValue -InputObject $App -Name $Name
+    if ($null -eq $value) {
+        return $false
+    }
+
+    if ($value -is [bool]) {
+        return $value
+    }
+
+    return ([string]$value).Trim() -in @("1", "true", "yes")
+}
+
+function Assert-AppDefinition {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$App,
+        [Parameter(Mandatory = $true)][int]$Index
+    )
+
+    $appLabel = "App #$Index"
+    $requiredFields = @(
+        "Name",
+        "Version",
+        "Url",
+        "FileName",
+        "Sha256",
+        "ProductCode",
+        "UpgradeCode",
+        "InstallerType",
+        "MsiProperties"
+    )
+
+    foreach ($field in $requiredFields) {
+        $value = Get-ObjectPropertyValue -InputObject $App -Name $field
+        if ([string]::IsNullOrWhiteSpace([string]$value)) {
+            throw "$appLabel is missing required manifest field '$field'."
         }
 
-        $productCodePath = Join-Path $root $App.ProductCode
-        if (Test-Path -LiteralPath $productCodePath) {
-            $item = Get-ItemProperty -LiteralPath $productCodePath
-            $displayName = Get-ObjectPropertyValue -InputObject $item -Name "DisplayName"
-            $displayVersion = Get-ObjectPropertyValue -InputObject $item -Name "DisplayVersion"
-
-            return [pscustomobject]@{
-                DisplayName = $displayName
-                DisplayVersion = $displayVersion
-                ProductCode = $App.ProductCode
-                RegistryPath = $productCodePath
-            }
+        if ($field -eq "Name") {
+            $appLabel = $value
         }
     }
 
-    foreach ($root in $registryRoots) {
-        if (-not (Test-Path -LiteralPath $root)) {
+    if ($App.InstallerType -ne "msi") {
+        throw "$appLabel has unsupported installer type '$($App.InstallerType)'."
+    }
+
+    if ($App.Sha256 -notmatch "^[A-Fa-f0-9]{64}$") {
+        throw "$appLabel has an invalid SHA256 value."
+    }
+
+    foreach ($field in @("ProductCode", "UpgradeCode")) {
+        if ($App.$field -notmatch "^\{[0-9A-Fa-f-]{36}\}$") {
+            throw "$appLabel has an invalid $field value."
+        }
+    }
+}
+
+function Get-UninstallRegistryRoot {
+    return @(
+        [pscustomobject]@{
+            Scope = "Machine"
+            Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+        },
+        [pscustomobject]@{
+            Scope = "Machine"
+            Path = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+        },
+        [pscustomobject]@{
+            Scope = "CurrentUser"
+            Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+        },
+        [pscustomobject]@{
+            Scope = "CurrentUser"
+            Path = "HKCU:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+        }
+    )
+}
+
+function Get-InstalledApplicationEntry {
+    param([Parameter(Mandatory = $true)][pscustomobject]$App)
+
+    $seenRegistryPaths = @{}
+
+    foreach ($root in Get-UninstallRegistryRoot) {
+        if (-not (Test-Path -LiteralPath $root.Path)) {
             continue
         }
 
-        foreach ($subkey in Get-ChildItem -LiteralPath $root) {
+        foreach ($subkey in Get-ChildItem -LiteralPath $root.Path) {
+            if ($seenRegistryPaths.ContainsKey($subkey.PSPath)) {
+                continue
+            }
+
             try {
                 $item = Get-ItemProperty -LiteralPath $subkey.PSPath
             }
@@ -90,19 +161,46 @@ function Get-InstalledApplication {
 
             $displayName = Get-ObjectPropertyValue -InputObject $item -Name "DisplayName"
             $displayVersion = Get-ObjectPropertyValue -InputObject $item -Name "DisplayVersion"
+            $isTargetProductCode = $subkey.PSChildName -eq $App.ProductCode
+            $isMatchingDisplayName = $displayName -eq $App.Name
 
-            if ($displayName -eq $App.Name -and -not [string]::IsNullOrWhiteSpace($displayVersion)) {
-                return [pscustomobject]@{
-                    DisplayName = $displayName
-                    DisplayVersion = $displayVersion
-                    ProductCode = $subkey.PSChildName
-                    RegistryPath = $subkey.PSPath
-                }
+            if (-not $isTargetProductCode -and -not $isMatchingDisplayName) {
+                continue
+            }
+
+            $seenRegistryPaths[$subkey.PSPath] = $true
+
+            [pscustomobject]@{
+                DisplayName = $displayName
+                DisplayVersion = $displayVersion
+                ProductCode = $subkey.PSChildName
+                RegistryPath = $subkey.PSPath
+                Scope = $root.Scope
+                WindowsInstaller = Get-ObjectPropertyValue -InputObject $item -Name "WindowsInstaller"
+                UninstallString = Get-ObjectPropertyValue -InputObject $item -Name "UninstallString"
+                QuietUninstallString = Get-ObjectPropertyValue -InputObject $item -Name "QuietUninstallString"
+                InstallLocation = Get-ObjectPropertyValue -InputObject $item -Name "InstallLocation"
             }
         }
     }
+}
 
-    return $null
+function Get-InstalledApplication {
+    param([Parameter(Mandatory = $true)][pscustomobject]$App)
+
+    $installedApplications = @(Get-InstalledApplicationEntry -App $App)
+    if ($installedApplications.Count -eq 0) {
+        return $null
+    }
+
+    $targetProduct = $installedApplications | Where-Object { $_.ProductCode -eq $App.ProductCode } | Select-Object -First 1
+    if ($targetProduct) {
+        return $targetProduct
+    }
+
+    return $installedApplications |
+        Sort-Object @{ Expression = { ConvertTo-Version -Value $_.DisplayVersion }; Descending = $true }, DisplayVersion |
+        Select-Object -First 1
 }
 
 function Test-AppInstalledAtTargetVersion {
@@ -155,6 +253,169 @@ function Assert-FileHash {
     }
 
     Write-Host "Verified SHA256 for $Path"
+}
+
+function Split-CommandLine {
+    param([Parameter(Mandatory = $true)][string]$CommandLine)
+
+    $trimmed = $CommandLine.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        throw "Uninstall command is empty."
+    }
+
+    if ($trimmed.StartsWith('"')) {
+        $endQuote = $trimmed.IndexOf('"', 1)
+        if ($endQuote -lt 1) {
+            throw "Cannot parse uninstall command: $CommandLine"
+        }
+
+        return [pscustomobject]@{
+            FilePath = $trimmed.Substring(1, $endQuote - 1)
+            Arguments = $trimmed.Substring($endQuote + 1).Trim()
+        }
+    }
+
+    $firstSpace = $trimmed.IndexOf(" ")
+    if ($firstSpace -lt 0) {
+        return [pscustomobject]@{
+            FilePath = $trimmed
+            Arguments = ""
+        }
+    }
+
+    $exeIndex = $trimmed.IndexOf(".exe", [System.StringComparison]::OrdinalIgnoreCase)
+    if ($exeIndex -ge 0) {
+        $exeEnd = $exeIndex + 4
+        return [pscustomobject]@{
+            FilePath = $trimmed.Substring(0, $exeEnd)
+            Arguments = $trimmed.Substring($exeEnd).Trim()
+        }
+    }
+
+    return [pscustomobject]@{
+        FilePath = $trimmed.Substring(0, $firstSpace)
+        Arguments = $trimmed.Substring($firstSpace + 1).Trim()
+    }
+}
+
+function Uninstall-InstalledApplication {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$Entry,
+        [Parameter(Mandatory = $true)][string]$LogPath
+    )
+
+    $versionText = ""
+    if (-not [string]::IsNullOrWhiteSpace($Entry.DisplayVersion)) {
+        $versionText = " $($Entry.DisplayVersion)"
+    }
+
+    Write-Host "Uninstalling existing $($Entry.DisplayName)$versionText from $($Entry.Scope)."
+    $isMsi = ($Entry.WindowsInstaller -eq 1 -or $Entry.WindowsInstaller -eq "1" -or $Entry.UninstallString -match "MsiExec") -and (Test-GuidString -Value $Entry.ProductCode)
+
+    if ($isMsi) {
+        $argumentList = @(
+            "/x",
+            $Entry.ProductCode,
+            "/qn",
+            "/norestart",
+            "/L*v",
+            "`"$LogPath`""
+        )
+
+        $process = Start-Process -FilePath "msiexec.exe" -ArgumentList $argumentList -Wait -PassThru
+    }
+    else {
+        $commandLine = $Entry.QuietUninstallString
+        $usedQuietUninstall = $true
+
+        if ([string]::IsNullOrWhiteSpace($commandLine)) {
+            $commandLine = $Entry.UninstallString
+            $usedQuietUninstall = $false
+        }
+
+        if ([string]::IsNullOrWhiteSpace($commandLine)) {
+            throw "No uninstall command found for $($Entry.DisplayName) at $($Entry.RegistryPath)."
+        }
+
+        $parsedCommand = Split-CommandLine -CommandLine $commandLine
+        $filePath = [Environment]::ExpandEnvironmentVariables($parsedCommand.FilePath)
+        $arguments = $parsedCommand.Arguments
+
+        if (-not $usedQuietUninstall -and $filePath -match "\.exe$" -and $arguments -notmatch '(^|\s)/S($|\s)') {
+            $arguments = (@($arguments, "/S") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join " "
+        }
+
+        $startProcessParameters = @{
+            FilePath = $filePath
+            Wait = $true
+            PassThru = $true
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($arguments)) {
+            $startProcessParameters.ArgumentList = $arguments
+        }
+
+        $process = Start-Process @startProcessParameters
+    }
+
+    if ($process.ExitCode -eq 0) {
+        Write-Host "$($Entry.DisplayName)$versionText uninstalled successfully."
+        return 0
+    }
+
+    if ($process.ExitCode -eq 3010) {
+        Write-Host "$($Entry.DisplayName)$versionText uninstalled successfully. Reboot is required."
+        return 3010
+    }
+
+    throw "$($Entry.DisplayName)$versionText uninstall failed with exit code $($process.ExitCode)."
+}
+
+function Invoke-ExistingApplicationCleanup {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$App,
+        [Parameter(Mandatory = $true)][string]$LogDirectory,
+        [Parameter(Mandatory = $true)][string]$Timestamp
+    )
+
+    $targetVersion = ConvertTo-Version -Value $App.Version
+    $installedApplications = @(Get-InstalledApplicationEntry -App $App)
+    $rebootRequiredByUninstall = $false
+
+    foreach ($entry in $installedApplications) {
+        if ($entry.ProductCode -eq $App.ProductCode) {
+            continue
+        }
+
+        $installedVersion = ConvertTo-Version -Value $entry.DisplayVersion
+        if ($installedVersion -and $targetVersion -and $installedVersion -gt $targetVersion) {
+            Write-Host "$($entry.DisplayName) $($entry.DisplayVersion) is newer than target $($App.Version). Leaving it installed."
+            continue
+        }
+
+        $safeName = ($entry.DisplayName -replace '[^A-Za-z0-9.-]+', '-').Trim("-")
+        if ([string]::IsNullOrWhiteSpace($safeName)) {
+            $safeName = "existing-app"
+        }
+
+        $safeVersion = ($entry.DisplayVersion -replace '[^A-Za-z0-9.-]+', '-').Trim("-")
+        if ([string]::IsNullOrWhiteSpace($safeVersion)) {
+            $safeVersion = "unknown-version"
+        }
+
+        $uninstallLog = Join-Path $LogDirectory "$safeName-$safeVersion-uninstall-$Timestamp.log"
+        $exitCode = Uninstall-InstalledApplication -Entry $entry -LogPath $uninstallLog
+
+        if ($exitCode -eq 3010) {
+            $rebootRequiredByUninstall = $true
+        }
+    }
+
+    if ($rebootRequiredByUninstall) {
+        return 3010
+    }
+
+    return 0
 }
 
 function Install-MsiPackage {
@@ -221,14 +482,27 @@ $rebootRequired = $false
 
 try {
     $apps = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+    if (-not $apps) {
+        throw "Manifest contains no app entries."
+    }
 
+    $appIndex = 0
     foreach ($app in $apps) {
-        try {
-            Write-Host ""
-            Write-Host "== $($app.Name) =="
+        $appIndex++
+        $appName = "App #$appIndex"
 
-            if ($app.InstallerType -ne "msi") {
-                throw "Unsupported installer type '$($app.InstallerType)' for $($app.Name)."
+        try {
+            Assert-AppDefinition -App $app -Index $appIndex
+            $appName = $app.Name
+
+            Write-Host ""
+            Write-Host "== $appName =="
+
+            if (Test-ManifestFlag -App $app -Name "RemoveExistingBeforeInstall") {
+                $cleanupExitCode = Invoke-ExistingApplicationCleanup -App $app -LogDirectory $logDirectory -Timestamp $timestamp
+                if ($cleanupExitCode -eq 3010) {
+                    $rebootRequired = $true
+                }
             }
 
             if (Test-AppInstalledAtTargetVersion -App $app) {
@@ -264,7 +538,7 @@ try {
             }
         }
         catch {
-            $message = "$($app.Name): $($_.Exception.Message)"
+            $message = "${appName}: $($_.Exception.Message)"
             Write-Host "ERROR: $message"
             $failedApps.Add($message)
         }
